@@ -6,6 +6,7 @@
     </appender>
 
     <logger name="io.grpc" level="INFO" />
+    <logger name="us.abaz.googlephotos" level="INFO" />
 
     <root level="debug">
         <appender-ref ref="STDOUT" />

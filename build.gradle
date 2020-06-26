@@ -22,6 +22,7 @@ dependencies {
     implementation 'commons-io:commons-io:2.7'
     implementation 'org.apache.commons:commons-lang3:3.10'
 
+    implementation 'com.google:guava:29.0-jre'
     implementation 'com.google.api-client:google-api-client:1.30.9'
     implementation 'com.google.oauth-client:google-oauth-client-jetty:1.30.6'
     implementation 'com.google.photos.library:google-photos-library-client:1.5.0'
