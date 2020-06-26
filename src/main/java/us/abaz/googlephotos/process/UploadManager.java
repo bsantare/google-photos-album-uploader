@@ -1,8 +1,10 @@
 package us.abaz.googlephotos.process;
 
 import com.google.api.core.ApiFuture;
+import com.google.common.base.Strings;
 import com.google.common.collect.ImmutableList;
 import com.google.common.util.concurrent.MoreExecutors;
+import com.google.common.util.concurrent.RateLimiter;
 import com.google.photos.library.v1.PhotosLibraryClient;
 import com.google.photos.library.v1.proto.BatchCreateMediaItemsRequest;
 import com.google.photos.library.v1.upload.UploadMediaItemRequest;
@@ -14,36 +16,42 @@ import org.apache.commons.lang3.StringUtils;
 import us.abaz.googlephotos.mediafinder.MediaFile;
 import us.abaz.googlephotos.util.PhotoUploadConfig;
 import us.abaz.googlephotos.util.PhotosLibraryClientFactory;
+import us.abaz.googlephotos.util.SimpleProgressRenderer;
 
 import java.io.FileNotFoundException;
 import java.io.RandomAccessFile;
 import java.net.URLConnection;
 import java.nio.file.Files;
-import java.nio.file.Path;
 import java.nio.file.Paths;
-import java.util.HashSet;
 import java.util.List;
-import java.util.Set;
 import java.util.concurrent.CountDownLatch;
 import java.util.concurrent.Semaphore;
 import java.util.concurrent.atomic.AtomicBoolean;
+import java.util.concurrent.atomic.AtomicInteger;
 
 @Slf4j
+@SuppressWarnings("UnstableApiUsage")
 public class UploadManager implements AutoCloseable {
     private static final List<String> REQUIRED_SCOPES =
             ImmutableList.of(
                     "https://www.googleapis.com/auth/photoslibrary.readonly",
                     "https://www.googleapis.com/auth/photoslibrary.appendonly");
     private static final String FILE_ACCESS_MODE = "r";
+    // Max parallel uploads - this is independent of rate limiting for long running uploads
     private static final int MAX_PARALLEL_UPLOADS = 15;
+    // Maximum number of requests initiated per minute - these are rate limited on the Google side to 10
+    private static final int GOOGLE_MAX_REQUESTS_PER_MINUTE = 10;
 
     private final PhotoUploadConfig config;
 
     private final PhotosLibraryClient photosLibraryClient;
     private final AlbumManager albumManager;
     private final Semaphore uploadSlotSemaphore = new Semaphore(MAX_PARALLEL_UPLOADS, true);
-    private final AtomicBoolean uploadRunning = new AtomicBoolean(true);
     private final CountDownLatch shutdownLatch = new CountDownLatch(1);
+    private final RateLimiter rateLimiter = RateLimiter.create((double) GOOGLE_MAX_REQUESTS_PER_MINUTE / 60.0);
+    private final AtomicInteger errorCount = new AtomicInteger(0);
+
+    private volatile boolean forcedShutdown = false;
 
     @SneakyThrows
     public UploadManager(PhotoUploadConfig config) {
@@ -60,7 +68,7 @@ public class UploadManager implements AutoCloseable {
 
     @SneakyThrows
     public void stopUpload() {
-        uploadRunning.set(false);
+        forcedShutdown = true;
         log.info("Orderly shutdown initiated.  Waiting for active uploads to complete...");
         shutdownLatch.await();
     }
@@ -70,34 +78,40 @@ public class UploadManager implements AutoCloseable {
      */
     @SneakyThrows
     public void startUpload() {
-        int progress = 0;
         try (MediaItemManager mediaItemManager = new MediaItemManager(config)) {
+            int progress = 0;
+            int totalFiles = mediaItemManager.getTotalFiles();
             MediaFile curMediaFile = mediaItemManager.getNextFile();
-            while (curMediaFile != null && uploadRunning.get()) {
+            while (!forcedShutdown && curMediaFile != null) {
                 // Get or create an Album for the current media file
                 Album album = albumManager.getOrCreateAlbum(curMediaFile.getAlbumName());
 
-                // Block until an upload slot becomes available
-                uploadSlotSemaphore.acquire();
+                if (!forcedShutdown) {
+                    // Initiate the next file upload - this will block until 1) an upload slot is available and
+                    // 2) rate limiting is satisfied
+                    int inProgress = uploadNextFile(album, mediaItemManager, curMediaFile);
 
-                // Upload the file - this call will block until an upload slot becomes available
-                initiateFileUpload(album, mediaItemManager, curMediaFile);
+                    progress++;
 
-                progress++;
-                if (progress % 100 == 0) {
-                    log.info("{} files uploaded", progress);
+                    SimpleProgressRenderer.renderProgress(
+                            progress,
+                            totalFiles,
+                            inProgress,
+                            errorCount.get()
+                    );
+
+                    // Find the next file to process
+                    curMediaFile = mediaItemManager.getNextFile();
                 }
-
-                // Find the next file to process
-                curMediaFile = mediaItemManager.getNextFile();
             }
 
             // Orderly shutdown
-            if (!uploadRunning.get()) {
-                int permitCount = 0;
-                while (permitCount < MAX_PARALLEL_UPLOADS) {
-                    uploadSlotSemaphore.acquire();
-                    permitCount++;
+            if (forcedShutdown) {
+                int activeCount = getActiveUploadCount();
+                while (activeCount > 0) {
+                    log.info("Waiting for {} upload(s) still in progress to complete...", MAX_PARALLEL_UPLOADS - uploadSlotSemaphore.availablePermits());
+                    Thread.sleep(2500);
+                    activeCount = getActiveUploadCount();
                 }
                 log.info("Orderly shutdown complete.");
             }
@@ -105,6 +119,32 @@ public class UploadManager implements AutoCloseable {
             log.error("Unknown exception during upload processing", e);
             System.exit(-1);
         }
+    }
+
+    /**
+     * Upload the next file.  This will block until
+     * 1) an upload slot is available and
+     * 2) rate limiting is satisfied
+     *
+     * @param album            The album to upload to
+     * @param mediaItemManager The media item manager to use
+     * @param curMediaFile     The current file
+     * @return Total upload slots currently in use
+     */
+    @SneakyThrows
+    private int uploadNextFile(Album album, MediaItemManager mediaItemManager, MediaFile curMediaFile) {
+        // Block until an upload slot becomes available
+        uploadSlotSemaphore.acquire();
+        // Rate limit to 10 requests per minute or the Google Photos API will reject any requests beyond this rate
+        rateLimiter.acquire();
+
+        initiateFileUpload(album, mediaItemManager, curMediaFile);
+
+        return getActiveUploadCount();
+    }
+
+    private int getActiveUploadCount() {
+        return MAX_PARALLEL_UPLOADS - uploadSlotSemaphore.availablePermits();
     }
 
     /**
@@ -146,6 +186,7 @@ public class UploadManager implements AutoCloseable {
             log.error("Error uploading file " + fileName, e);
             // Release the semaphore on error
             uploadSlotSemaphore.release();
+            errorCount.addAndGet(1);
         }
     }
 
@@ -189,11 +230,11 @@ public class UploadManager implements AutoCloseable {
                 }
             } catch (Exception e) {
                 log.error("Error uploading file", e);
+                errorCount.addAndGet(1);
             } finally {
                 // Release the upload slot
                 uploadSlotSemaphore.release();
             }
         };
     }
-
 }

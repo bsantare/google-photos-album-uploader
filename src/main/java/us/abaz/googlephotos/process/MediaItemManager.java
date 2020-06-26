@@ -1,5 +1,7 @@
 package us.abaz.googlephotos.process;
 
+import com.google.errorprone.annotations.concurrent.LazyInit;
+import lombok.Getter;
 import lombok.SneakyThrows;
 import lombok.extern.slf4j.Slf4j;
 import org.apache.commons.io.IOUtils;
@@ -24,6 +26,7 @@ public class MediaItemManager implements AutoCloseable {
     private final PhotoUploadConfig config;
     private final File processedLog;
     private volatile boolean initialized = false;
+    private int totalFiles;
     private PrintWriter writer = null;
     private Queue<MediaFile> filesToProcessQueue;
 
@@ -84,6 +87,13 @@ public class MediaItemManager implements AutoCloseable {
         }
     }
 
+    public int getTotalFiles() {
+        if (!initialized) {
+            initialize();
+        }
+        return totalFiles;
+    }
+
     private void initialize() {
         synchronized (monitor) {
             if (!initialized) {
@@ -96,6 +106,7 @@ public class MediaItemManager implements AutoCloseable {
                 foundFiles.removeAll(processedFiles);
                 log.info("Total files to process {} after removing {} already processed files", foundFiles.size(), processedFiles.size());
                 filesToProcessQueue = new ConcurrentLinkedQueue<>(foundFiles);
+                totalFiles = filesToProcessQueue.size();
                 initialized = true;
             }
         }
