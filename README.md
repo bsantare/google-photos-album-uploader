@@ -19,9 +19,10 @@ java -jar ./build/libs/google-photos-album-uploader-0.0.1.jar -r <some root dir>
 ```
 
 ### Options
+Defaults are set in us.abaz.googlephotos.util.PhotoUploadConfig
+
 ```
- -c,--credFilePath <arg>      Google Photos API credential mediafinder
-                              (json)
+ -c,--credFilePath <arg>      Google Photos API credential (json)
  -p,--parallelUploads         Number of parallel uploads
  -r,--searchRootDir <arg>     Root dir for search
  -t,--tempStoragePath <arg>   Temporary storage path
