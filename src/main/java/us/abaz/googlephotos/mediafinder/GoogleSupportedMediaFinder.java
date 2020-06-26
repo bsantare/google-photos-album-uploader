@@ -41,12 +41,13 @@ public class GoogleSupportedMediaFinder extends SimpleFileVisitor<Path> {
         return Files.walk(Paths.get(rootPath))
                         .filter(Files::isRegularFile)
                         .filter(path -> {
+                            // Check to see if this is a supported file type
                             String fileName = path.getFileName().toString();
                             int dotIdx = fileName.lastIndexOf('.');
                             if (dotIdx == -1) {
                                 return false;
                             }
-                            String ext = fileName.substring(dotIdx, fileName.length());
+                            String ext = fileName.substring(dotIdx);
                             boolean match = extMatchSet.contains(ext.toLowerCase());
                             if (!match) {
                                 log.trace("Skipping mediafinder - no match: {}", path);

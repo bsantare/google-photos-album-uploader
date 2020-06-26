@@ -16,7 +16,7 @@ public class ArgsParser {
         tempStoragePath.setRequired(false);
         options.addOption(tempStoragePath);
 
-        Option credFilePath = new Option("c", "credFilePath", true, "Google Photos API credential mediafinder (json)");
+        Option credFilePath = new Option("c", "credFilePath", true, "Google Photos API credentials (json)");
         credFilePath.setRequired(false);
         options.addOption(credFilePath);
 
