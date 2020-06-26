@@ -33,7 +33,7 @@ public class MediaItemManager implements AutoCloseable {
     }
 
     @Override
-    public void close() throws Exception {
+    public void close() {
         synchronized (monitor) {
             if (writer != null) {
                 writer.close();
@@ -70,6 +70,7 @@ public class MediaItemManager implements AutoCloseable {
 
     @SneakyThrows
     private List<MediaFile> getProcessedMediaFiles() {
+        log.info("Processed file log path: {}", processedLog.getAbsolutePath());
         if (!processedLog.exists()) {
             return Collections.emptyList();
         }

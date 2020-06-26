@@ -10,6 +10,7 @@ import com.google.photos.library.v1.upload.UploadMediaItemResponse;
 import com.google.photos.types.proto.Album;
 import lombok.SneakyThrows;
 import lombok.extern.slf4j.Slf4j;
+import org.apache.commons.lang3.StringUtils;
 import us.abaz.googlephotos.mediafinder.MediaFile;
 import us.abaz.googlephotos.util.PhotoUploadConfig;
 import us.abaz.googlephotos.util.PhotosLibraryClientFactory;
@@ -17,10 +18,15 @@ import us.abaz.googlephotos.util.PhotosLibraryClientFactory;
 import java.io.FileNotFoundException;
 import java.io.RandomAccessFile;
 import java.net.URLConnection;
+import java.nio.file.Files;
+import java.nio.file.Path;
+import java.nio.file.Paths;
 import java.util.HashSet;
 import java.util.List;
 import java.util.Set;
+import java.util.concurrent.CountDownLatch;
 import java.util.concurrent.Semaphore;
+import java.util.concurrent.atomic.AtomicBoolean;
 
 @Slf4j
 public class UploadManager implements AutoCloseable {
@@ -36,6 +42,8 @@ public class UploadManager implements AutoCloseable {
     private final PhotosLibraryClient photosLibraryClient;
     private final AlbumManager albumManager;
     private final Semaphore uploadSlotSemaphore = new Semaphore(MAX_PARALLEL_UPLOADS, true);
+    private final AtomicBoolean uploadRunning = new AtomicBoolean(true);
+    private final CountDownLatch shutdownLatch = new CountDownLatch(1);
 
     @SneakyThrows
     public UploadManager(PhotoUploadConfig config) {
@@ -46,29 +54,52 @@ public class UploadManager implements AutoCloseable {
 
     public void close() {
         photosLibraryClient.close();
+        shutdownLatch.countDown();
+        log.info("Photos client closed");
     }
 
+    @SneakyThrows
+    public void stopUpload() {
+        uploadRunning.set(false);
+        log.info("Orderly shutdown initiated.  Waiting for active uploads to complete...");
+        shutdownLatch.await();
+    }
+
+    /**
+     * Begin the file upload batch job
+     */
+    @SneakyThrows
     public void startUpload() {
         int progress = 0;
         try (MediaItemManager mediaItemManager = new MediaItemManager(config)) {
             MediaFile curMediaFile = mediaItemManager.getNextFile();
-            while (curMediaFile != null) {
-                // Get or create an Album for the entry
+            while (curMediaFile != null && uploadRunning.get()) {
+                // Get or create an Album for the current media file
                 Album album = albumManager.getOrCreateAlbum(curMediaFile.getAlbumName());
 
-                // Upload the file
-                uploadFile(album, mediaItemManager, curMediaFile);
+                // Block until an upload slot becomes available
+                uploadSlotSemaphore.acquire();
+
+                // Upload the file - this call will block until an upload slot becomes available
+                initiateFileUpload(album, mediaItemManager, curMediaFile);
 
                 progress++;
                 if (progress % 100 == 0) {
                     log.info("{} files uploaded", progress);
                 }
 
-                // Wait for an upload slot to become available
-                uploadSlotSemaphore.acquire();
-
                 // Find the next file to process
                 curMediaFile = mediaItemManager.getNextFile();
+            }
+
+            // Orderly shutdown
+            if (!uploadRunning.get()) {
+                int permitCount = 0;
+                while (permitCount < MAX_PARALLEL_UPLOADS) {
+                    uploadSlotSemaphore.acquire();
+                    permitCount++;
+                }
+                log.info("Orderly shutdown complete.");
             }
         } catch (Exception e) {
             log.error("Unknown exception during upload processing", e);
@@ -77,19 +108,34 @@ public class UploadManager implements AutoCloseable {
     }
 
     /**
-     * Upload some files to an album
+     * Infer the mime type of a file
+     *
+     * @param fileName The file name to test
+     * @return The String representing the file mime type
+     */
+    @SneakyThrows
+    private String inferFileMimeType(String fileName) {
+        String mimeType = URLConnection.guessContentTypeFromName(fileName);
+        return StringUtils.isNotBlank(mimeType) ? mimeType : Files.probeContentType(Paths.get(fileName));
+    }
+
+    /**
+     * Initiate the asynchronous file upload to an album
      *
      * @param album     The album to upload to
      * @param mediaFile The media file to upload
      */
-    private void uploadFile(Album album, MediaItemManager mediaItemManager, MediaFile mediaFile) {
+    @SneakyThrows
+    private void initiateFileUpload(Album album, MediaItemManager mediaItemManager, MediaFile mediaFile) {
         String fileName = mediaFile.getCompleteFilename();
         try {
             log.debug("Processing file {} for album {}", mediaFile.getFileName(), mediaFile.getAlbumName());
             UploadMediaItemRequest.Builder uploadRequestBuilder = UploadMediaItemRequest.newBuilder();
             uploadRequestBuilder
-                    .setMimeType(URLConnection.guessContentTypeFromName(fileName))
+                    .setMimeType(inferFileMimeType(fileName))
                     .setDataFile(new RandomAccessFile(fileName, FILE_ACCESS_MODE));
+
+            // Kick off the async upload
             ApiFuture<UploadMediaItemResponse> uploadResponseFuture =
                     photosLibraryClient.uploadMediaItemCallable()
                             .futureCall(uploadRequestBuilder.build());
@@ -98,6 +144,8 @@ public class UploadManager implements AutoCloseable {
                     MoreExecutors.directExecutor());
         } catch (FileNotFoundException e) {
             log.error("Error uploading file " + fileName, e);
+            // Release the semaphore on error
+            uploadSlotSemaphore.release();
         }
     }
 
@@ -131,8 +179,6 @@ public class UploadManager implements AutoCloseable {
 
                     // Success - mark the file as uploaded
                     mediaItemManager.markMediaFileUploaded(mediaFile);
-                    // Free up a slot
-                    uploadSlotSemaphore.release();
                 } else {
                     UploadMediaItemResponse.Error error = uploadResponse.getError().orElse(null);
                     if (error != null) {
@@ -143,6 +189,9 @@ public class UploadManager implements AutoCloseable {
                 }
             } catch (Exception e) {
                 log.error("Error uploading file", e);
+            } finally {
+                // Release the upload slot
+                uploadSlotSemaphore.release();
             }
         };
     }

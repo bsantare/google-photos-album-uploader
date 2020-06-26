@@ -17,7 +17,8 @@ public class GooglePhotoAlbumUploader {
             System.exit(-1);
         }
 
-        try (UploadManager uploadManager = new UploadManager(config)){
+        try (UploadManager uploadManager = new UploadManager(config)) {
+            Runtime.getRuntime().addShutdownHook(new Thread(uploadManager::stopUpload));
             uploadManager.startUpload();
         } catch (Exception e) {
             log.error("Error upload files", e);
