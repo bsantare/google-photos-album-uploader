@@ -26,7 +26,7 @@ public class MediaFile {
         return MediaFile.builder()
                 .absolutePath(absoluteParentPath)
                 .albumName(albumName)
-                .fileName(path.toString().replaceFirst(absoluteParentPath + File.separator, ""))
+                .fileName(path.toString().replace(absoluteParentPath + File.separator, ""))
                 .build();
     }
 }

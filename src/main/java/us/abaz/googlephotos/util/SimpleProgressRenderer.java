@@ -8,16 +8,18 @@ public class SimpleProgressRenderer {
     private static final String PROGRESS_CHARS = Strings.repeat("=", TOTAL_PROGRESS_CHARS);
     private static final String REMAINING_CHARS = Strings.repeat(" ", TOTAL_PROGRESS_CHARS);
 
-    public static void renderProgress(int current, int total, int inProgress, int errors) {
+    public static void renderProgress(int current, int total, int inProgress, int errors, String currentMessage) {
         int progressChars = (int) Math.round((double) current / (double) total) * TOTAL_PROGRESS_CHARS;
         String errorsMsg = errors > 0 ? String.format(" , %d errors", errors) : StringUtils.EMPTY;
         System.out.print(
-                String.format("\r[%s>%s] %d of %d, %d in progress%s",
+                String.format("\r[%s>%s] %d of %d, %d in progress%s %s",
                         PROGRESS_CHARS.substring(TOTAL_PROGRESS_CHARS - progressChars),
                         REMAINING_CHARS.substring(progressChars),
                         current,
                         total,
                         inProgress,
-                        errorsMsg));
+                        errorsMsg,
+                        currentMessage)
+        );
     }
 }

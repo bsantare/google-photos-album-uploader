@@ -28,7 +28,11 @@ public class ArgsParser {
         credFilePath.setRequired(false);
         options.addOption(excludeVidoes);
 
-        Option parallelUploads = new Option("p", "parallelUploads", false, "Number of parallel uploads");
+        Option albumNamePrefix = new Option("ap", "albumNamePrefix", true, "Prefix for generated album names");
+        albumNamePrefix.setRequired(false);
+        options.addOption(albumNamePrefix);
+
+        Option parallelUploads = new Option("p", "parallelUploads", true, "Number of parallel uploads");
         credFilePath.setRequired(false);
         options.addOption(parallelUploads);
 
@@ -64,6 +68,11 @@ public class ArgsParser {
             String excludeVideosVal = cmd.getOptionValue("xv");
             if (excludeVideosVal != null) {
                 builder.includeVideos(false);
+            }
+
+            String albumNamePrefixVal = cmd.getOptionValue("ap");
+            if (albumNamePrefixVal != null) {
+                builder.albumNamePrefix(albumNamePrefixVal);
             }
 
             String parallelUploadsVal = cmd.getOptionValue("p");
