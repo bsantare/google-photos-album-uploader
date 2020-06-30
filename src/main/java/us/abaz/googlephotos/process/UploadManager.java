@@ -23,6 +23,8 @@ import java.io.RandomAccessFile;
 import java.net.URLConnection;
 import java.nio.file.Files;
 import java.nio.file.Paths;
+import java.time.Duration;
+import java.time.Instant;
 import java.util.List;
 import java.util.concurrent.CountDownLatch;
 import java.util.concurrent.Semaphore;
@@ -37,16 +39,14 @@ public class UploadManager implements AutoCloseable {
                     "https://www.googleapis.com/auth/photoslibrary.readonly",
                     "https://www.googleapis.com/auth/photoslibrary.appendonly");
     private static final String FILE_ACCESS_MODE = "r";
-    // Max parallel uploads - this is independent of rate limiting for long running uploads
-    private static final int MAX_PARALLEL_UPLOADS = 15;
     // Maximum number of requests initiated per minute - these are rate limited on the Google side to 10
-    private static final int GOOGLE_MAX_REQUESTS_PER_MINUTE = 10;
+    private static final int GOOGLE_MAX_REQUESTS_PER_MINUTE = 15;
 
     private final PhotoUploadConfig config;
 
     private final PhotosLibraryClient photosLibraryClient;
     private final AlbumManager albumManager;
-    private final Semaphore uploadSlotSemaphore = new Semaphore(MAX_PARALLEL_UPLOADS, true);
+    private final Semaphore uploadSlotSemaphore;
     private final CountDownLatch shutdownLatch = new CountDownLatch(1);
     private final RateLimiter rateLimiter = RateLimiter.create((double) GOOGLE_MAX_REQUESTS_PER_MINUTE / 60.0);
     private final AtomicInteger errorCount = new AtomicInteger(0);
@@ -58,6 +58,7 @@ public class UploadManager implements AutoCloseable {
         this.config = config;
         photosLibraryClient = PhotosLibraryClientFactory.createClient(config.getCredFilePath(), REQUIRED_SCOPES);
         albumManager = new AlbumManager(photosLibraryClient);
+        uploadSlotSemaphore = new Semaphore(config.getMaxParallelUploads(), true);
     }
 
     public void close() {
@@ -69,7 +70,7 @@ public class UploadManager implements AutoCloseable {
     @SneakyThrows
     public void stopUpload() {
         forcedShutdown = true;
-        log.info("Orderly shutdown initiated.  Waiting for active uploads to complete...");
+        System.out.println("\nOrderly shutdown initiated.  Waiting for active uploads to complete...");
         shutdownLatch.await();
     }
 
@@ -80,16 +81,20 @@ public class UploadManager implements AutoCloseable {
     public void startUpload() {
         try (MediaItemManager mediaItemManager = new MediaItemManager(config)) {
             int progress = 0;
+            Instant startInstant = Instant.now();
             int totalFiles = mediaItemManager.getTotalFiles();
             MediaFile curMediaFile = mediaItemManager.getNextFile();
             while (!forcedShutdown && curMediaFile != null) {
                 // Get or create an Album for the current media file
-                Album album = albumManager.getOrCreateAlbum(curMediaFile.getAlbumName());
+                String albumName = config.getAlbumNamePrefix() + curMediaFile.getAlbumName();
+                Album album = albumManager.getOrCreateAlbum(albumName);
 
                 if (!forcedShutdown) {
                     // Initiate the next file upload - this will block until 1) an upload slot is available and
                     // 2) rate limiting is satisfied
                     int inProgress = uploadNextFile(album, mediaItemManager, curMediaFile);
+
+                    double rate = (double) Math.max(progress, 1) / (double) Math.max(Duration.between(startInstant, Instant.now()).toMinutes(), 1);
 
                     progress++;
 
@@ -97,7 +102,8 @@ public class UploadManager implements AutoCloseable {
                             progress,
                             totalFiles,
                             inProgress,
-                            errorCount.get()
+                            errorCount.get(),
+                            String.format("\tRate: %.2f/minute\tCurrent Album: '%s' Current File: '%s'", rate, albumName, curMediaFile.getFileName())
                     );
 
                     // Find the next file to process
@@ -106,15 +112,14 @@ public class UploadManager implements AutoCloseable {
             }
 
             // Orderly shutdown
-            if (forcedShutdown) {
-                int activeCount = getActiveUploadCount();
-                while (activeCount > 0) {
-                    log.info("Waiting for {} upload(s) still in progress to complete...", MAX_PARALLEL_UPLOADS - uploadSlotSemaphore.availablePermits());
-                    Thread.sleep(2500);
-                    activeCount = getActiveUploadCount();
-                }
-                log.info("Orderly shutdown complete.");
+            System.out.print("\n");
+            int activeCount = getActiveUploadCount();
+            while (activeCount > 0) {
+                System.out.print(String.format("\rWaiting for %d upload(s) still in progress to complete...", getActiveUploadCount()));
+                Thread.sleep(2500);
+                activeCount = getActiveUploadCount();
             }
+            System.out.println("\nShutdown complete.");
         } catch (Exception e) {
             log.error("Unknown exception during upload processing", e);
             System.exit(-1);
@@ -144,7 +149,7 @@ public class UploadManager implements AutoCloseable {
     }
 
     private int getActiveUploadCount() {
-        return MAX_PARALLEL_UPLOADS - uploadSlotSemaphore.availablePermits();
+        return config.getMaxParallelUploads() - uploadSlotSemaphore.availablePermits();
     }
 
     /**

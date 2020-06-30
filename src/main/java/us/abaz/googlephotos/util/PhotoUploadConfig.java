@@ -19,5 +19,7 @@ public class PhotoUploadConfig {
     @Builder.Default
     boolean includeVideos = true;
     @Builder.Default
-    int maxParallelUploads = 10;
+    String albumNamePrefix = "";
+    @Builder.Default
+    int maxParallelUploads = 15;
 }
