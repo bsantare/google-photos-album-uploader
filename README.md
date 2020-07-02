@@ -30,6 +30,6 @@ Defaults are set in us.abaz.googlephotos.util.PhotoUploadConfig
  -t,--tempStoragePath <arg>   Temporary storage path
  -xp,--excludePhotos          Exclude photos from upload
  -xv,--excludeVideos          Exclude videos from upload
- -a,--albumNamePrefix         Prefix the generated album name - i.e. Videos_<the generated album name>
+ -ap,--albumNamePrefix         Prefix the generated album name - i.e. Videos_<the generated album name>
 ```
 
