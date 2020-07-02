@@ -1,5 +1,7 @@
 # google-photos-album-uploader
-Quick and dirty Java Google Photos bulk uploader with album creation based on existing directory names
+Quick and dirty Java Google Photos bulk uploader with album creation based on existing directory names.
+
+This utility makes quick work of uploading photos and videos to Google Photos using existing directory structure to generate album names.  The utility will continue where it left off when killed/restarted.
 
 ## Building
 ```bash
@@ -28,5 +30,6 @@ Defaults are set in us.abaz.googlephotos.util.PhotoUploadConfig
  -t,--tempStoragePath <arg>   Temporary storage path
  -xp,--excludePhotos          Exclude photos from upload
  -xv,--excludeVideos          Exclude videos from upload
+ -a,--albumNamePrefix         Prefix the generated album name - i.e. Videos_<the generated album name>
 ```
 
